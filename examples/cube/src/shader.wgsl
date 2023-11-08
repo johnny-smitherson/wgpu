@@ -18,6 +18,17 @@ fn vs_main(
     return result;
 }
 
+@vertex
+fn vs_main_wire(
+    @location(0) position: vec4<f32>,
+    @location(1) tex_coord: vec2<f32>,
+) -> VertexOutput {
+    var result: VertexOutput;
+    result.tex_coord = tex_coord;
+    result.position = transform * position + vec4<f32>(-0.5, -0.5, -0.5, -0.5);
+    return result;
+}
+
 @group(0)
 @binding(1)
 var r_color: texture_2d<u32>;

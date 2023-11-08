@@ -1,6 +1,6 @@
 use bytemuck::{Pod, Zeroable};
 use std::{borrow::Cow, f32::consts, mem};
-use wgpu::util::DeviceExt;
+use wgpu::{util::DeviceExt, Sampler, TextureView, Texture};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -88,6 +88,9 @@ struct Example {
     uniform_buf: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
     pipeline_wire: Option<wgpu::RenderPipeline>,
+    depth_texture: Texture,
+    depth_texture_view: TextureView,
+    depth_texture_sampler: Sampler,
 }
 
 impl Example {
@@ -100,7 +103,48 @@ impl Example {
         );
         projection * view
     }
+
+    fn create_depth_texture(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration, label: &str) -> (Texture, TextureView, Sampler) {
+        let size = wgpu::Extent3d { // 2.
+            width: config.width,
+            height: config.height,
+            depth_or_array_layers: 1,
+        };
+        let desc = wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT // 3.
+                | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        };
+        let texture = device.create_texture(&desc);
+    
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(
+            &wgpu::SamplerDescriptor { // 4.
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Nearest,
+                compare: Some(wgpu::CompareFunction::LessEqual), // 5.
+                lod_min_clamp: 0.0,
+                lod_max_clamp: 100.0,
+                ..Default::default()
+            }
+        );
+        (texture, view, sampler)
+    }
+    
 }
+
+
+pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float; // 1.
 
 impl wgpu_example::framework::Example for Example {
     fn optional_features() -> wgpu::Features {
@@ -116,6 +160,7 @@ impl wgpu_example::framework::Example for Example {
         // Create the vertex and index buffers
         let vertex_size = mem::size_of::<Vertex>();
         let (vertex_data, index_data) = create_vertices();
+        let (d_tex, d_view, d_sample) = Self::create_depth_texture(device, config, "depth_texture");
 
         let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -255,7 +300,13 @@ impl wgpu_example::framework::Example for Example {
                 cull_mode: Some(wgpu::Face::Back),
                 ..Default::default()
             },
-            depth_stencil: None,
+            depth_stencil:  Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less, // 1.
+                stencil: wgpu::StencilState::default(), // 2.
+                bias: wgpu::DepthBiasState::default(),
+            }),
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
@@ -269,7 +320,7 @@ impl wgpu_example::framework::Example for Example {
                 layout: Some(&pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &shader,
-                    entry_point: "vs_main",
+                    entry_point: "vs_main_wire",
                     buffers: &vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -279,13 +330,17 @@ impl wgpu_example::framework::Example for Example {
                         format: config.view_formats[0],
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
+                                operation: wgpu::BlendOperation::Subtract,
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::One,
+                            },
+                            alpha: wgpu::BlendComponent {
                                 operation: wgpu::BlendOperation::Add,
-                                src_factor: wgpu::BlendFactor::OneMinusDst,
+                                src_factor: wgpu::BlendFactor::One,
                                 dst_factor: wgpu::BlendFactor::Zero,
                             },
-                            alpha: wgpu::BlendComponent::REPLACE,
                         }),
-                        write_mask: wgpu::ColorWrites::COLOR,
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
@@ -294,7 +349,13 @@ impl wgpu_example::framework::Example for Example {
                     polygon_mode: wgpu::PolygonMode::Line,
                     ..Default::default()
                 },
-                depth_stencil: None,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less, // 1.
+                    stencil: wgpu::StencilState::default(), // 2.
+                    bias: wgpu::DepthBiasState::default(),
+                }),
                 multisample: wgpu::MultisampleState::default(),
                 multiview: None,
             });
@@ -312,6 +373,9 @@ impl wgpu_example::framework::Example for Example {
             uniform_buf,
             pipeline,
             pipeline_wire,
+            depth_texture: d_tex,
+            depth_texture_view: d_view,
+            depth_texture_sampler: d_sample,
         }
     }
 
@@ -328,6 +392,8 @@ impl wgpu_example::framework::Example for Example {
         let mx_total = Self::generate_matrix(config.width as f32 / config.height as f32);
         let mx_ref: &[f32; 16] = mx_total.as_ref();
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(mx_ref));
+
+        (self.depth_texture, self.depth_texture_view, self.depth_texture_sampler) = Self::create_depth_texture(_device, config, "depth_texture");
     }
 
     fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -349,7 +415,14 @@ impl wgpu_example::framework::Example for Example {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
-                depth_stencil_attachment: None,
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_texture_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
