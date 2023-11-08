@@ -280,12 +280,12 @@ impl wgpu_example::framework::Example for Example {
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
                                 operation: wgpu::BlendOperation::Add,
-                                src_factor: wgpu::BlendFactor::SrcAlpha,
-                                dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                                src_factor: wgpu::BlendFactor::OneMinusDst,
+                                dst_factor: wgpu::BlendFactor::Zero,
                             },
                             alpha: wgpu::BlendComponent::REPLACE,
                         }),
-                        write_mask: wgpu::ColorWrites::ALL,
+                        write_mask: wgpu::ColorWrites::COLOR,
                     })],
                 }),
                 primitive: wgpu::PrimitiveState {
